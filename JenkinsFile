@@ -1,0 +1,96 @@
+pipeline {
+    agent any
+    options { ansiColor('xterm') }
+    parameters {
+        booleanParam(
+                defaultValue: false,
+                description: '',
+                name: 'FORCE_FULL_BUILD')
+        booleanParam(
+                defaultValue: false,
+                description: 'Check dependecy updates',
+                name: 'CHECK_DEPENDENCIES')
+        booleanParam(
+                defaultValue: false,
+                description: 'Perform release',
+                name: 'RELEASE')
+        string(
+                        defaultValue: '',
+                        description: 'Release version',
+                        name: 'RELEASE_VERSION')
+        string(
+                        defaultValue: '',
+                        description: 'Next development version',
+                        name: 'DEV_VERSION')
+            }
+    }
+    stages {
+        stage('Build') {
+            steps {
+                sh 'sbt clean compile'
+            }
+        }
+        stage('Test') {
+            steps {
+                echo 'Testing project and  generating coverage report'
+                sh "sbt clean test"
+            }
+        }
+        stage('Coverage') {
+            steps {
+                 sh 'sbt clean jacoco'
+                 jacoco(execPattern: 'target/scala-2.11/jacoco/data/jacoco.exec', classPattern:'target/scala-2.11/classes', sourcePattern: 'src/java',exclusionPattern: 'src/test*')
+                 sh 'sbt "project testkit" coverage test coverageReport jacoco'
+                 cobertura autoUpdateHealth: false, autoUpdateStability: false, coberturaReportFile: '**testkit/target/scala-2.11/coverage-report/cobertura.xml', conditionalCoverageTargets: '70, 0, 0', failUnhealthy: false, failUnstable: false, lineCoverageTargets: '80, 0, 0', maxNumberOfBuilds: 0, methodCoverageTargets: '80, 0, 0', onlyStable: false, sourceEncoding: 'ASCII', zoomCoverageChart: false
+                 jacoco(execPattern: 'testkit/target/scala-2.11/jacoco/data/jacoco.exec', classPattern:'testkit/target/scala-2.11/classes', sourcePattern: 'testkit/src/java',exclusionPattern: 'testkit/src/test*')
+                    }
+                }
+        stage('Code analysis') {
+            when {
+                anyOf {
+                    branch 'develop'
+                }
+            }
+            steps {
+                withSonarQubeEnv('sonar') {}
+                sh 'sbt sonarScan'
+            }
+        }
+        stage('Assembly') {
+            when {
+                not{
+                    anyOf {
+                        branch 'develop'
+                        branch 'master'
+                    }
+                }
+            }
+            steps {
+                sh 'sbt "set test in assembly := {}" clean assembly'
+            }
+        }
+        stage('Check dependencies') {
+            when {
+                anyOf {
+                    branch 'master'
+                    branch 'develop'
+                    equals expected: true, actual: params.CHECK_DEPENDENCIES
+                }
+            }
+            steps {
+                sh 'sbt dependencyUpdates dependencyUpdatesReport'
+                archiveArtifacts artifacts: 'target/dependency-updates.txt'
+            }
+        }
+        stage('Deploy') {
+            when {
+                anyOf {
+                    branch 'develop'
+                    equals expected: true, actual: params.FORCE_FULL_BUILD
+                }
+            }
+            steps {
+                sh 'sbt package publish'
+            }
+        }
+    }
